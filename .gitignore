@@ -1,0 +1,32 @@
+# Imagenes (enunciado y capturas, no se versionan)
+Imagen/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.bmp
+
+# Dependencias
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Variables de entorno
+.env
+.env.local
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo

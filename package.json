@@ -1,0 +1,14 @@
+{
+  "name": "servidor-mqtt",
+  "version": "1.0.0",
+  "description": "Servidor de mensajes basado en MQTT con esquema de canales (publicar/suscribir)",
+  "main": "servidor/servidor.js",
+  "scripts": {
+    "start": "node servidor/servidor.js",
+    "servidor": "node servidor/servidor.js",
+    "suscriptor": "node ejemplos/suscriptor.js",
+    "publicador": "node ejemplos/publicador.js",
+    "chat": "node ejemplos/chat.js"
+  },
+  "license": "MIT"
+}
