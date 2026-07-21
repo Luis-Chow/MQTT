@@ -25,17 +25,13 @@ class ClienteMQTT extends EventEmitter {
         this.socket = null;
         this.buffer = Buffer.alloc(0);
         this.manejadores = new Map(); // filtro -> funcion(mensaje, canal)
-        // Respuestas pendientes (CONNACK/SUBACK/UNSUBACK). TCP conserva el
-        // orden, por lo que cada respuesta corresponde a la peticion mas antigua.
-        this.esperas = [];
+        this.esperas = []; // promesas pendientes de respuesta; TCP conserva el orden (FIFO)
     }
 
     conectar() {
-        return new Promise((resolve, reject) => {
-            this.esperas.push({ resolve, reject });
-            this.socket = net.createConnection(this.puerto, this.host, () => {
-                this.socket.write(crear.connect(this.id));
-            });
+        return this._esperar(() => {
+            this.socket = net.createConnection(this.puerto, this.host, () =>
+                this.socket.write(crear.connect(this.id)));
             this.socket.on('data', (datos) => this._recibir(datos));
             this.socket.on('error', (error) => {
                 const espera = this.esperas.shift();
@@ -44,18 +40,14 @@ class ClienteMQTT extends EventEmitter {
             this.socket.on('close', () => {
                 clearInterval(this.timerPing);
                 this.socket = null;
-                if (this.conectado) {
-                    this.conectado = false;
-                    this.emit('desconectado');
-                }
+                if (this.conectado) { this.conectado = false; this.emit('desconectado'); }
             });
         });
     }
 
     desconectar() {
-        if (!this.socket) return;
         clearInterval(this.timerPing);
-        this.socket.end(crear.disconnect());
+        this.socket?.end(crear.disconnect());
     }
 
     publicar(canal, mensaje) {
@@ -65,20 +57,20 @@ class ClienteMQTT extends EventEmitter {
     }
 
     suscribir(canal, manejador) {
-        return new Promise((resolve, reject) => {
-            this.esperas.push({ canal, manejador, resolve, reject });
-            this.socket.write(crear.subscribe(canal));
-        });
+        return this._esperar(() => this.socket.write(crear.subscribe(canal)), { canal, manejador });
     }
 
     desuscribir(canal) {
-        return new Promise((resolve, reject) => {
-            this.esperas.push({ canal, resolve, reject });
-            this.socket.write(crear.unsubscribe(canal));
-        });
+        return this._esperar(() => this.socket.write(crear.unsubscribe(canal)), { canal });
     }
 
-    /* --------------------- interno ------------------------------------ */
+    // Encola una promesa pendiente y ejecuta la accion que pide su respuesta
+    _esperar(accion, extra = {}) {
+        return new Promise((resolve, reject) => {
+            this.esperas.push({ resolve, reject, ...extra });
+            accion();
+        });
+    }
 
     _recibir(datos) {
         this.buffer = Buffer.concat([this.buffer, datos]);
@@ -96,42 +88,31 @@ class ClienteMQTT extends EventEmitter {
         if (paquete.tipo === TIPO.PUBLISH) {
             this.emit('mensaje', paquete.canal, paquete.mensaje);
             for (const [filtro, manejador] of this.manejadores) {
-                if (protocolo.coincideCanal(filtro, paquete.canal)) {
-                    manejador(paquete.mensaje, paquete.canal);
-                }
+                if (protocolo.coincideCanal(filtro, paquete.canal)) manejador(paquete.mensaje, paquete.canal);
             }
             return;
         }
         if (paquete.tipo === TIPO.PINGRESP) return; // el servidor sigue vivo
 
+        // CONNACK / SUBACK / UNSUBACK: responder la peticion mas antigua
         const espera = this.esperas.shift();
         if (!espera) return;
-
-        if (paquete.tipo === TIPO.CONNACK) {
-            if (paquete.codigo !== CODIGO.OK) {
-                espera.reject(new Error('Conexion rechazada por el servidor'));
-                return this.socket.destroy();
-            }
-            this.conectado = true;
-            this._iniciarPing();
-            this.emit('conectado');
-            espera.resolve(this);
-        } else if (paquete.tipo === TIPO.SUBACK) {
-            if (paquete.codigo !== CODIGO.OK) {
-                return espera.reject(new Error(`Suscripcion rechazada: "${espera.canal}"`));
-            }
-            if (espera.manejador) this.manejadores.set(espera.canal, espera.manejador);
-            espera.resolve(espera.canal);
-        } else if (paquete.tipo === TIPO.UNSUBACK) {
-            this.manejadores.delete(espera.canal);
-            espera.resolve(espera.canal);
+        if (paquete.codigo > CODIGO.OK) {
+            if (paquete.tipo === TIPO.CONNACK) this.socket.destroy();
+            return espera.reject(new Error('Peticion rechazada por el servidor'));
         }
-    }
-
-    _iniciarPing() {
-        if (this.keepalive <= 0) return;
-        this.timerPing = setInterval(() => this.socket?.write(crear.pingreq()), this.keepalive * 1000);
-        this.timerPing.unref?.();
+        if (paquete.tipo === TIPO.CONNACK) {
+            this.conectado = true;
+            this.emit('conectado');
+            if (this.keepalive > 0) {
+                this.timerPing = setInterval(() => this.socket?.write(crear.pingreq()), this.keepalive * 1000);
+                this.timerPing.unref?.();
+            }
+            return espera.resolve(this);
+        }
+        if (paquete.tipo === TIPO.SUBACK && espera.manejador) this.manejadores.set(espera.canal, espera.manejador);
+        if (paquete.tipo === TIPO.UNSUBACK) this.manejadores.delete(espera.canal);
+        espera.resolve(espera.canal);
     }
 }
 
